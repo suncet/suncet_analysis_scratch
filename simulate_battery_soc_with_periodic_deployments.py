@@ -71,7 +71,7 @@ class BatterySimulator:
     
     def voltage_from_soc(self, soc: float) -> float:
         """Convert state of charge to battery voltage."""
-        # Simple linear model - you may want to replace this with a more accurate model
+        # Simple linear model
         soc_fraction = soc / self.config.battery_capacity
         return self.config.min_voltage + (self.config.max_voltage - self.config.min_voltage) * soc_fraction
     
@@ -99,10 +99,6 @@ class BatterySimulator:
                 if current_time % event.periodicity == 0:
                     # Calculate energy consumed by the event (convert power to energy)
                     event_energy = event.power_consumption * (event.duration / 3600.0)  # Convert seconds to hours
-                    # Only perform the event if we have enough power
-                    if new_charge >= event_energy:
-                        new_charge -= event_energy
-                        self.event_occurrences[event.name].append(current_time)
             
             # Ensure we don't exceed battery capacity
             new_charge = min(new_charge, self.config.battery_capacity)
@@ -189,7 +185,6 @@ def main():
     """Main function to run the simulation."""
     # Default configuration
     config = SimulationConfig()
-
     
     # Define power events with default periodicities
     power_events = [
@@ -197,27 +192,10 @@ def main():
         PowerEvent(name="Solar Panel Deployment", power_consumption=3.6, duration=5.0, periodicity=60*60)  
     ]
     
-    # Allow command-line customization
-    import argparse
-    parser = argparse.ArgumentParser(description="Spacecraft Battery Simulation")
-    parser.add_argument("--antenna-period", type=int, default=30,
-                        help="Periodicity of antenna deployment attempts (minutes)")
-    parser.add_argument("--panel-period", type=int, default=60,
-                        help="Periodicity of solar panel deployment attempts (minutes)")
-    parser.add_argument("--duration", type=int, default=24,
-                        help="Simulation duration (hours)")
-    
-    args = parser.parse_args()
-    
-    # Update configuration based on command-line arguments
-    power_events[0].periodicity = args.antenna_period * 60  # Convert minutes to seconds
-    power_events[1].periodicity = args.panel_period * 60  # Convert minutes to seconds
-    config.simulation_duration = args.duration * 60 * 60  # Convert hours to seconds
-    
     print(f"Running simulation with:")
     print(f"  Antenna deployment every {power_events[0].periodicity/60} minutes")
     print(f"  Solar panel deployment every {power_events[1].periodicity/60} minutes")
-    print(f"  Duration: {args.duration} hours")
+    print(f"  Duration: {config.simulation_duration/3600} hours")
     
     # Run simulation
     simulator = BatterySimulator(config, power_events)
