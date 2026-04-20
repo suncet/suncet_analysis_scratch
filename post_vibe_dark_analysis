@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+"""Post-vibration dark analysis: fixed-pattern subtraction and interactive display."""
+
+from __future__ import annotations
+
+import glob
+import os
+import re
+import sys
+
+import matplotlib.pyplot as plt
+import numpy as np
+from astropy.io import fits
+from matplotlib.widgets import Slider
+
+GAIN_DN_PER_ELECTRON = 1.8
+
+# Datasheet dark model: T from FITS is Celsius * 100 in DET0_TEM; time in seconds.
+_DATASHEET_MEAN_COEF = 20.0  # e⁻/s at 20 °C reference (per datasheet scaling)
+_DATASHEET_STD_COEF = 12.0
+_DATASHEET_TREF_C = 20.0
+_DATASHEET_DOUBLING_K = 5.5
+
+
+def _det0_temp_celsius(header: dict) -> float:
+    v = header.get("DET0_TEM")
+    if v is None:
+        raise KeyError("DET0_TEM not found in FITS header")
+    return float(v) / 100.0
+
+
+def _datasheet_dark_mean_std(
+    effective_integration_time_s: float, T_celsius: float
+) -> tuple[float, float]:
+    """Predicted mean and std (electrons) from datasheet scaling."""
+    exp_term = 2 ** ((T_celsius - _DATASHEET_TREF_C) / _DATASHEET_DOUBLING_K)
+    mean_pred = effective_integration_time_s * _DATASHEET_MEAN_COEF * exp_term
+    std_pred = effective_integration_time_s * _DATASHEET_STD_COEF * exp_term
+    return mean_pred, std_pred
+
+
+def _load_fits(path: str) -> tuple[np.ndarray, dict]:
+    with fits.open(path) as hdul:
+        data = np.asarray(hdul[0].data, dtype=np.float32)
+        header = dict(hdul[0].header)
+    return data, header
+
+
+def _intg_seconds(header: dict) -> float:
+    ms = header.get("INTG_MS")
+    if ms is None:
+        raise KeyError("INTG_MS not found in FITS header")
+    return float(ms) / 1000.0
+
+
+def _find_ref_path(paths: list[str], ref_token: str = "1185") -> str:
+    for p in paths:
+        if re.search(rf"image_{ref_token}\b", os.path.basename(p)):
+            return p
+    raise FileNotFoundError(
+        f"No FITS filename matching image_{ref_token} in {[os.path.basename(p) for p in paths]}"
+    )
+
+
+def main() -> None:
+    root = os.environ.get("suncet_data")
+    if not root:
+        print("Set environment variable suncet_data to your data root.", file=sys.stderr)
+        sys.exit(1)
+
+    folder = os.path.join(
+        root, "test_data", "2026-04-20_three_dark_images", "level0_5"
+    )
+    fits_paths = sorted(glob.glob(os.path.join(folder, "*.fits")))
+    if len(fits_paths) < 3:
+        print(f"Expected at least 3 FITS files in {folder!r}, found {len(fits_paths)}.", file=sys.stderr)
+        sys.exit(1)
+
+    ref_path = _find_ref_path(fits_paths)
+    other_paths = [p for p in fits_paths if p != ref_path]
+    if len(other_paths) != 2:
+        print("Expected exactly two non-reference FITS files.", file=sys.stderr)
+        sys.exit(1)
+
+    ref_data, ref_header = _load_fits(ref_path)
+    t_ref_s = _intg_seconds(ref_header)
+
+    fixed_e = ref_data / GAIN_DN_PER_ELECTRON
+    fixed_mean = float(np.mean(fixed_e))
+    fixed_median = float(np.median(fixed_e))
+    fixed_std = float(np.std(fixed_e))
+
+    dark_results: list[dict] = []
+    for p in sorted(other_paths):
+        data, header = _load_fits(p)
+        t_s = _intg_seconds(header)
+        delta_t_s = t_s - t_ref_s
+        dn_sub = data - ref_data
+        dark_e = dn_sub / GAIN_DN_PER_ELECTRON
+        mean = float(np.mean(dark_e))
+        median = float(np.median(dark_e))
+        std = float(np.std(dark_e))
+        det_temp_c = _det0_temp_celsius(header)
+        pred_mean, pred_std = _datasheet_dark_mean_std(delta_t_s, det_temp_c)
+        dark_results.append(
+            {
+                "path": p,
+                "basename": os.path.basename(p),
+                "intg_s": t_s,
+                "delta_t_s": delta_t_s,
+                "det_temp_c": det_temp_c,
+                "pred_mean": pred_mean,
+                "pred_std": pred_std,
+                "dark_e": dark_e,
+                "mean": mean,
+                "median": median,
+                "std": std,
+            }
+        )
+
+    # Shared display limits (initial)
+    stack = np.concatenate(
+        [fixed_e.ravel(), dark_results[0]["dark_e"].ravel(), dark_results[1]["dark_e"].ravel()]
+    )
+    vmin0 = float(np.percentile(stack, 2))
+    vmax0 = float(np.percentile(stack, 98))
+    if vmin0 >= vmax0:
+        vmin0, vmax0 = float(np.min(stack)), float(np.max(stack))
+
+    fig, axes = plt.subplots(1, 3, figsize=(14, 5.2))
+    plt.subplots_adjust(bottom=0.28, wspace=0.35)
+
+    ims: list[plt.AxesImage] = []
+    cbs = []
+
+    def _annotate_fixed(ax):
+        lines = [
+            "Fixed pattern (image_1185)",
+            f"INTG = {t_ref_s:.6g} s",
+            f"gain = {GAIN_DN_PER_ELECTRON} DN/e⁻",
+            f"mean = {fixed_mean:.5g} e⁻",
+            f"median = {fixed_median:.5g} e⁻",
+            f"std dev = {fixed_std:.5g} e⁻",
+        ]
+        ax.text(
+            0.02,
+            0.98,
+            "\n".join(lines),
+            transform=ax.transAxes,
+            va="top",
+            ha="left",
+            color="white",
+            fontsize=9,
+            bbox=dict(boxstyle="round,pad=0.35", facecolor="black", alpha=0.55),
+        )
+
+    def _annotate_dark(ax, info: dict):
+        lines = [
+            info["basename"],
+            f"INTG = {info['intg_s']:.6g} s",
+            f"Δt (vs ref) = {info['delta_t_s']:.6g} s",
+            f"DET0_TEM = {info['det_temp_c']:.4g} °C (hdr/100)",
+            f"mean = {info['mean']:.5g} e⁻",
+            f"median = {info['median']:.5g} e⁻",
+            f"std dev = {info['std']:.5g} e⁻",
+            f"datasheet pred. mean = {info['pred_mean']:.5g} e⁻",
+            f"datasheet pred. σ = {info['pred_std']:.5g} e⁻",
+        ]
+        ax.text(
+            0.02,
+            0.98,
+            "\n".join(lines),
+            transform=ax.transAxes,
+            va="top",
+            ha="left",
+            color="white",
+            fontsize=8,
+            bbox=dict(boxstyle="round,pad=0.35", facecolor="black", alpha=0.55),
+        )
+
+    ax0, ax1, ax2 = axes
+    im0 = ax0.imshow(fixed_e, cmap="inferno", vmin=vmin0, vmax=vmax0, interpolation="nearest")
+    ax0.set_title("Fixed pattern")
+    _annotate_fixed(ax0)
+    ims.append(im0)
+
+    im1 = ax1.imshow(
+        dark_results[0]["dark_e"],
+        cmap="inferno",
+        vmin=vmin0,
+        vmax=vmax0,
+        interpolation="nearest",
+    )
+    ax1.set_title("Dark (subtract fixed pattern)")
+    _annotate_dark(ax1, dark_results[0])
+    ims.append(im1)
+
+    im2 = ax2.imshow(
+        dark_results[1]["dark_e"],
+        cmap="inferno",
+        vmin=vmin0,
+        vmax=vmax0,
+        interpolation="nearest",
+    )
+    ax2.set_title("Dark (subtract fixed pattern)")
+    _annotate_dark(ax2, dark_results[1])
+    ims.append(im2)
+
+    for ax, im in zip(axes, ims):
+        ax.set_xticks([])
+        ax.set_yticks([])
+        cbs.append(fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="electrons"))
+
+    ax_vmin = fig.add_axes((0.12, 0.10, 0.76, 0.03))
+    ax_vmax = fig.add_axes((0.12, 0.05, 0.76, 0.03))
+    s_vmin = Slider(ax_vmin, "vmin (all)", stack.min(), stack.max(), valinit=vmin0, valfmt="%.4g")
+    s_vmax = Slider(ax_vmax, "vmax (all)", stack.min(), stack.max(), valinit=vmax0, valfmt="%.4g")
+
+    def _apply_clim(vmin: float, vmax: float) -> None:
+        if vmin >= vmax:
+            return
+        for im in ims:
+            im.set_clim(vmin, vmax)
+        fig.canvas.draw_idle()
+
+    def _on_slider(_):
+        _apply_clim(s_vmin.val, s_vmax.val)
+
+    s_vmin.on_changed(_on_slider)
+    s_vmax.on_changed(_on_slider)
+
+    plt.suptitle(
+        "Intensity in electrons (DN ÷ gain); shared vmin/vmax for all panels",
+        fontsize=11,
+        y=0.98,
+    )
+    plt.show()
+
+
+if __name__ == "__main__":
+    main()
