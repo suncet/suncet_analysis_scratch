@@ -152,7 +152,7 @@ def main():
     Main function to orchestrate the data analysis and plotting.
     """
     # Configuration
-    data_directory = os.path.join(os.getenv('suncet_data'), 'test_data/2025_177_10_06_25_bluefin_fm1_acceptance_part1/decoded/csv/')
+    data_directory = os.path.join(os.getenv('suncet_data'), 'test_data/2025_07_18_bluefin_post_vibe_checkout/decoded/csv/')
     
     # Read data files
     print("Reading CSV files...")
