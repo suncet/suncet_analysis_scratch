@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare external stim lamp frames to post-vibration dark analysis (same subtraction pipeline)."""
+"""LED external stim lamp vs post-vibration dark (same subtraction pipeline as post_vibe_dark_analysis)."""
 
 from __future__ import annotations
 
@@ -456,7 +456,7 @@ def main() -> None:
     pairs = _match_by_intg(dark_pkg["dark_results"], led_pkg["dark_results"])
     _print_pair_stats(pairs)
 
-    out_dir = os.path.join(os.getcwd(), "external_led_analysis_output")
+    out_dir = os.path.join(os.getcwd(), "led_external_analysis_output")
     os.makedirs(out_dir, exist_ok=True)
     side_path = os.path.join(out_dir, "dark_vs_led_residuals_side_by_side.png")
     hist_path = os.path.join(out_dir, "dark_vs_led_residual_histograms.png")
