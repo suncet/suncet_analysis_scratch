@@ -1,0 +1,12 @@
+# Pip mirror of environment.yml (third-party imports used across *.py, extensionless
+# scripts, and *.ipynb in this repository). Python 3.10+ recommended.
+numpy
+matplotlib
+astropy
+scipy
+pandas
+h5py
+pillow
+tqdm
+aiapy
+jupyter

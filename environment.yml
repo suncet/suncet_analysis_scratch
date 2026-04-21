@@ -1,0 +1,19 @@
+# Conda environment for SunCET analysis scripts and notebooks in this repo.
+# Create: conda env create -f environment.yml
+# Update:  conda env update -f environment.yml --prune
+name: suncet_analysis
+channels:
+  - conda-forge
+dependencies:
+  - python >=3.10
+  - pip
+  - numpy
+  - matplotlib
+  - astropy
+  - scipy
+  - pandas
+  - h5py
+  - pillow
+  - tqdm
+  - aiapy
+  - jupyter
