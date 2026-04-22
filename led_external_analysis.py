@@ -11,6 +11,7 @@ from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.widgets import RadioButtons, Slider
 from astropy.io import fits
 
 try:
@@ -280,7 +281,9 @@ def _save_figure3_raw_comparisons(
         ax_d.set_yticks([])
         ax_d.set_title("Dark (raw DN)", fontsize=10)
         _annotate_raw_dn(ax_d, dark_r, "Dark")
-        fig.colorbar(im0, ax=ax_d, fraction=0.046, pad=0.04, label="DN")
+        fig.colorbar(
+            im0, ax=ax_d, location="left", fraction=0.046, pad=0.04, label="DN"
+        )
         im1 = ax_l.imshow(
             led_r["raw_dn"],
             cmap="inferno",
@@ -292,7 +295,9 @@ def _save_figure3_raw_comparisons(
         ax_l.set_yticks([])
         ax_l.set_title("External LED (raw DN)", fontsize=10)
         _annotate_raw_dn(ax_l, led_r, "Ext. LED")
-        fig.colorbar(im1, ax=ax_l, fraction=0.046, pad=0.04, label="DN")
+        fig.colorbar(
+            im1, ax=ax_l, location="left", fraction=0.046, pad=0.04, label="DN"
+        )
 
         ax_h = fig.add_subplot(gs[r_img + 1, :])
         combined = np.concatenate(
@@ -329,8 +334,288 @@ def _save_figure3_raw_comparisons(
         fontsize=11,
         y=0.995,
     )
-    fig.tight_layout(rect=[0, 0, 1, 0.98])
+    fig.tight_layout(rect=[0.06, 0, 1, 0.98])
     fig.savefig(out_path, dpi=150)
+
+
+def _save_led_on_over_dark_ratio(
+    pairs: list[tuple[dict[str, Any], dict[str, Any]]],
+    out_path: str,
+    *,
+    dark_floor_dn: float = 1.0,
+) -> None:
+    """
+    Per matched integration: image of (external LED raw DN) / (dark raw DN).
+
+    Denominator is clipped to at least `dark_floor_dn` to avoid divide-by-zero;
+    only finite ratios are used for the displayed color scale (percentile robust).
+    """
+    n = len(pairs)
+    fig, axes = plt.subplots(n, 1, figsize=(8.5, 3.2 * n), squeeze=False)
+    axes_flat = axes.ravel()
+    for ax, (dark_r, led_r) in zip(axes_flat, pairs):
+        t = dark_r["intg_s"]
+        dark_raw = np.asarray(dark_r["raw_dn"], dtype=np.float64)
+        led_raw = np.asarray(led_r["raw_dn"], dtype=np.float64)
+        if dark_raw.shape != led_raw.shape:
+            ax.set_visible(False)
+            continue
+        denom = np.maximum(dark_raw, dark_floor_dn)
+        ratio = led_raw / denom
+        flat = ratio[np.isfinite(ratio)]
+        if flat.size:
+            vmin = float(np.percentile(flat, 1.0))
+            vmax = float(np.percentile(flat, 99.0))
+        else:
+            vmin, vmax = 0.0, 1.0
+        if vmin >= vmax:
+            vmin, vmax = float(np.nanmin(flat)) if flat.size else 0.0, float(np.nanmax(flat)) if flat.size else 1.0
+        r_mean = float(np.nanmean(ratio))
+        r_med = float(np.nanmedian(ratio))
+        r_std = float(np.nanstd(ratio))
+        im = ax.imshow(
+            ratio,
+            cmap="viridis",
+            vmin=vmin,
+            vmax=vmax,
+            interpolation="nearest",
+        )
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_title(f"LED on / dark (raw DN) — INTG = {t:.6g} s", fontsize=10)
+        lines = [
+            f"Dark: {dark_r['basename']}",
+            f"LED: {led_r['basename']}",
+            f"mean ratio = {r_mean:.5g}",
+            f"median ratio = {r_med:.5g}",
+            f"std ratio = {r_std:.5g}",
+        ]
+        ax.text(
+            0.02,
+            0.98,
+            "\n".join(lines),
+            transform=ax.transAxes,
+            va="top",
+            ha="left",
+            color="white",
+            fontsize=8,
+            bbox=dict(boxstyle="round,pad=0.35", facecolor="black", alpha=0.55),
+        )
+        fig.colorbar(
+            im, ax=ax, location="left", fraction=0.046, pad=0.04, label="LED / dark (DN)"
+        )
+
+    fig.suptitle(
+        "Raw DN ratio: external stim lamp (LED on) divided by post-vibration dark, matched by INTG",
+        fontsize=11,
+        y=0.998,
+    )
+    fig.tight_layout(rect=[0.07, 0, 1, 0.97])
+    fig.savefig(out_path, dpi=150)
+
+
+def _save_led_on_minus_dark(
+    pairs: list[tuple[dict[str, Any], dict[str, Any]]],
+    out_path: str,
+) -> None:
+    """Per matched integration: image of (external LED raw DN) − (dark raw DN)."""
+    n = len(pairs)
+    fig, axes = plt.subplots(n, 1, figsize=(8.5, 3.2 * n), squeeze=False)
+    axes_flat = axes.ravel()
+    for ax, (dark_r, led_r) in zip(axes_flat, pairs):
+        t = dark_r["intg_s"]
+        dark_raw = np.asarray(dark_r["raw_dn"], dtype=np.float64)
+        led_raw = np.asarray(led_r["raw_dn"], dtype=np.float64)
+        if dark_raw.shape != led_raw.shape:
+            ax.set_visible(False)
+            continue
+        diff = led_raw - dark_raw
+        flat = diff.ravel()
+        p_lo = float(np.percentile(flat, 1.0))
+        p_hi = float(np.percentile(flat, 99.0))
+        lim = max(abs(p_lo), abs(p_hi))
+        if lim < 1e-12:
+            lim = 1.0
+        vmin, vmax = -lim, lim
+        d_mean = float(np.mean(diff))
+        d_med = float(np.median(diff))
+        d_std = float(np.std(diff))
+        im = ax.imshow(
+            diff,
+            cmap="coolwarm",
+            vmin=vmin,
+            vmax=vmax,
+            interpolation="nearest",
+        )
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_title(f"LED on − dark (raw DN) — INTG = {t:.6g} s", fontsize=10)
+        lines = [
+            f"Dark: {dark_r['basename']}",
+            f"LED: {led_r['basename']}",
+            f"mean Δ = {d_mean:.5g} DN",
+            f"median Δ = {d_med:.5g} DN",
+            f"std Δ = {d_std:.5g} DN",
+        ]
+        ax.text(
+            0.02,
+            0.98,
+            "\n".join(lines),
+            transform=ax.transAxes,
+            va="top",
+            ha="left",
+            color="white",
+            fontsize=8,
+            bbox=dict(boxstyle="round,pad=0.35", facecolor="black", alpha=0.55),
+        )
+        fig.colorbar(
+            im, ax=ax, location="left", fraction=0.046, pad=0.04, label="LED − dark (DN)"
+        )
+
+    fig.suptitle(
+        "Raw DN difference: external stim lamp (LED on) minus post-vibration dark, matched by INTG",
+        fontsize=11,
+        y=0.998,
+    )
+    fig.tight_layout(rect=[0.07, 0, 1, 0.97])
+    fig.savefig(out_path, dpi=150)
+
+
+def show_led_on_dark_vmin_vmax_interactive(
+    pairs: list[tuple[dict[str, Any], dict[str, Any]]],
+    *,
+    dark_floor_dn: float = 1.0,
+) -> None:
+    """
+    Open a matplotlib window: ratio (LED/dark) or difference (LED−dark) with interactive vmin/vmax.
+    """
+    n = len(pairs)
+    if n == 0:
+        return
+
+    ratio_data: list[np.ndarray] = []
+    diff_data: list[np.ndarray] = []
+    for dark_r, led_r in pairs:
+        dark_raw = np.asarray(dark_r["raw_dn"], dtype=np.float64)
+        led_raw = np.asarray(led_r["raw_dn"], dtype=np.float64)
+        if dark_raw.shape != led_raw.shape:
+            raise ValueError("Shape mismatch between dark and LED raw frames in a pair.")
+        denom = np.maximum(dark_raw, dark_floor_dn)
+        ratio_data.append((led_raw / denom).astype(np.float32))
+        diff_data.append((led_raw - dark_raw).astype(np.float32))
+
+    def _stack_range(arrays: list[np.ndarray]) -> tuple[float, float, float, float]:
+        c = np.concatenate([a.ravel() for a in arrays])
+        c = c[np.isfinite(c)]
+        if c.size == 0:
+            return 0.0, 1.0, 0.0, 1.0
+        lo, hi = float(c.min()), float(c.max())
+        p1, p99 = float(np.percentile(c, 1.0)), float(np.percentile(c, 99.0))
+        span = hi - lo
+        if span < 1e-12:
+            span = 1.0
+        m = 0.02 * span
+        return lo - m, hi + m, p1, p99
+
+    r_slo, r_shi, r_p1, r_p99 = _stack_range(ratio_data)
+    d_slo, d_shi, d_p1, d_p99 = _stack_range(diff_data)
+
+    fig, axes = plt.subplots(
+        n,
+        1,
+        figsize=(8.5, 0.4 + 2.9 * n),
+        num="LED vs dark (interactive vmin / vmax)",
+        squeeze=False,
+    )
+    ax_list = [axes.ravel()[i] for i in range(n)]
+    ims: list[Any] = []
+    for i, ax in enumerate(ax_list):
+        t = pairs[i][0]["intg_s"]
+        v0, v1 = r_p1, r_p99
+        if v0 >= v1:
+            v0, v1 = r_slo, r_shi
+        im = ax.imshow(
+            ratio_data[i],
+            cmap="viridis",
+            vmin=v0,
+            vmax=v1,
+            interpolation="nearest",
+        )
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_title(f"INTG = {t:.6g} s", fontsize=10)
+        ims.append(im)
+
+    cbar = fig.colorbar(
+        ims[0],
+        ax=ax_list,
+        location="left",
+        fraction=0.03,
+        pad=0.04,
+        label="LED / dark (DN)",
+    )
+    fig.subplots_adjust(left=0.18, right=0.95, top=0.95, bottom=0.2)
+
+    ax_mode = fig.add_axes((0.08, 0.02, 0.3, 0.09))
+    ax_vmin = fig.add_axes((0.45, 0.1, 0.5, 0.02))
+    ax_vmax = fig.add_axes((0.45, 0.05, 0.5, 0.02))
+
+    s_vmin: Any = None
+    s_vmax: Any = None
+
+    def _apply_clim() -> None:
+        if s_vmin is None or s_vmax is None:
+            return
+        v0, v1 = s_vmin.val, s_vmax.val
+        if v0 >= v1:
+            return
+        for im in ims:
+            im.set_clim(v0, v1)
+        cbar.update_normal(ims[0])
+        fig.canvas.draw_idle()
+
+    def _make_sliders(slo: float, shi: float, v0: float, v1: float) -> None:
+        nonlocal s_vmin, s_vmax
+        ax_vmin.clear()
+        ax_vmax.clear()
+        if v0 >= v1 or not np.isfinite(v0) or not np.isfinite(v1):
+            v0, v1 = slo, max(shi, slo + 1e-12 * max(abs(slo), 1.0))
+        v0 = float(np.clip(v0, slo, shi))
+        v1 = float(np.clip(v1, slo, shi))
+        if v0 >= v1:
+            v1 = min(shi, v0 + 1e-9 * (abs(v0) + 1.0))
+        s_vmin = Slider(ax_vmin, "vmin", slo, shi, valinit=v0, valfmt="%.5g", dragging=True)
+        s_vmax = Slider(ax_vmax, "vmax", slo, shi, valinit=v1, valfmt="%.5g", dragging=True)
+        s_vmin.on_changed(lambda _: _apply_clim())
+        s_vmax.on_changed(lambda _: _apply_clim())
+        _apply_clim()
+
+    _make_sliders(r_slo, r_shi, r_p1, r_p99)
+
+    def on_mode(label: str) -> None:
+        use_ratio = "Ratio" in label
+        arrays = ratio_data if use_ratio else diff_data
+        cmap = "viridis" if use_ratio else "coolwarm"
+        slo, shi, p1, p99 = (
+            (r_slo, r_shi, r_p1, r_p99) if use_ratio else (d_slo, d_shi, d_p1, d_p99)
+        )
+        for i, im in enumerate(ims):
+            im.set_data(arrays[i])
+            im.set_cmap(cmap)
+        cbar.mappable = ims[0]
+        cbar.set_label("LED / dark" if use_ratio else "LED − dark (DN)")
+        cbar.update_normal(ims[0])
+        v0, v1 = p1, p99
+        if v0 >= v1:
+            v0, v1 = slo, max(shi, slo + 1e-12)
+        _make_sliders(slo, shi, v0, v1)
+
+    radio = RadioButtons(
+        ax_mode,
+        ("Ratio (LED / dark)", "Difference (LED − dark)"),
+        active=0,
+    )
+    radio.on_clicked(on_mode)
 
 
 def _save_side_by_side_residuals(
@@ -354,13 +639,15 @@ def _save_side_by_side_residuals(
             ax.set_yticks([])
             ax.set_title(title_prefix, fontsize=10)
             _annotate_residual_stats(ax, dr, title_prefix)
-            fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="e⁻ (residual)")
+            fig.colorbar(
+                im, ax=ax, location="left", fraction=0.046, pad=0.04, label="e⁻ (residual)"
+            )
     fig.suptitle(
         "Residual after fixed-pattern subtraction (electrons), matched by integration time",
         fontsize=11,
         y=0.995,
     )
-    fig.tight_layout(rect=[0, 0, 1, 0.98])
+    fig.tight_layout(rect=[0.07, 0, 1, 0.98])
     fig.savefig(out_path, dpi=150)
 
 
@@ -461,10 +748,17 @@ def main() -> None:
     side_path = os.path.join(out_dir, "dark_vs_led_residuals_side_by_side.png")
     hist_path = os.path.join(out_dir, "dark_vs_led_residual_histograms.png")
     fig3_path = os.path.join(out_dir, "dark_vs_led_raw_figure3.png")
+    ratio_path = os.path.join(out_dir, "led_on_over_dark_ratio.png")
+    diff_path = os.path.join(out_dir, "led_on_minus_dark.png")
     _save_side_by_side_residuals(pairs, side_path)
     _save_histogram_overlays(pairs, hist_path)
     _save_figure3_raw_comparisons(pairs, fig3_path)
-    print(f"\nWrote:\n  {side_path}\n  {hist_path}\n  {fig3_path}")
+    _save_led_on_over_dark_ratio(pairs, ratio_path)
+    _save_led_on_minus_dark(pairs, diff_path)
+    show_led_on_dark_vmin_vmax_interactive(pairs)
+    print(
+        f"\nWrote:\n  {side_path}\n  {hist_path}\n  {fig3_path}\n  {ratio_path}\n  {diff_path}"
+    )
     print("Displaying figures (close windows to exit).")
     plt.show()
     plt.close("all")
