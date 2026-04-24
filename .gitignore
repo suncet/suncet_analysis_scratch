@@ -2,3 +2,4 @@
 *.csv
 .DS_Store
 *.png
+__pycache__/csie_det0_thermal.cpython-314.pyc
