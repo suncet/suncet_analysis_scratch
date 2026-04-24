@@ -13,20 +13,15 @@ import numpy as np
 from astropy.io import fits
 from matplotlib.widgets import Slider
 
+from csie_det0_thermal import det0_temperature_deg_c_from_header
+
 GAIN_DN_PER_ELECTRON = 1.8
 
-# Datasheet dark model: T from FITS is Celsius * 100 in DET0_TEM; time in seconds.
+# Datasheet dark model: T from DET0_TEM (DN) via csie_det0_thermal; time in seconds.
 _DATASHEET_MEAN_COEF = 20.0  # e⁻/s at 20 °C reference (per datasheet scaling)
 _DATASHEET_STD_COEF = 12.0
 _DATASHEET_TREF_C = 20.0
 _DATASHEET_DOUBLING_K = 5.5
-
-
-def _det0_temp_celsius(header: dict) -> float:
-    v = header.get("DET0_TEM")
-    if v is None:
-        raise KeyError("DET0_TEM not found in FITS header")
-    return float(v) / 100.0
 
 
 def _datasheet_dark_mean_std(
@@ -104,7 +99,7 @@ def main() -> None:
         mean = float(np.mean(dark_e))
         median = float(np.median(dark_e))
         std = float(np.std(dark_e))
-        det_temp_c = _det0_temp_celsius(header)
+        det_temp_c = det0_temperature_deg_c_from_header(header)
         pred_mean, pred_std = _datasheet_dark_mean_std(delta_t_s, det_temp_c)
         dark_rate = dark_e / delta_t_s
         rate_mean = float(np.mean(dark_rate))
@@ -175,7 +170,7 @@ def main() -> None:
             info["basename"],
             f"INTG = {info['intg_s']:.6g} s",
             f"Δt (vs ref) = {info['delta_t_s']:.6g} s",
-            f"DET0_TEM = {info['det_temp_c']:.4g} °C (hdr/100)",
+            f"DET0 temp = {info['det_temp_c']:.4g} °C",
             f"mean = {info['mean']:.5g} e⁻",
             f"median = {info['median']:.5g} e⁻",
             f"std dev = {info['std']:.5g} e⁻",
@@ -197,7 +192,7 @@ def main() -> None:
     def _annotate_dark_rate(ax, info: dict):
         lines = [
             info["basename"],
-            f"DET0_TEM = {info['det_temp_c']:.4g} °C (hdr/100)",
+            f"DET0 temp = {info['det_temp_c']:.4g} °C",
             f"mean = {info['rate_mean']:.5g} e⁻/s",
             f"median = {info['rate_median']:.5g} e⁻/s",
             f"std dev = {info['rate_std']:.5g} e⁻/s",
