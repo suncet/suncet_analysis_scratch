@@ -12,6 +12,8 @@ dependencies:
   - astropy
   - scipy
   - pandas
+  - xarray
+  - sunpy
   - h5py
   - pillow
   - tqdm
