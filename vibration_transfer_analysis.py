@@ -6,19 +6,30 @@ from typing import Dict, List, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from scipy.integrate import trapezoid
 
 
 DB_EPS = 1e-16
+FREQ_MIN_HZ = 20.0
+FREQ_MAX_HZ = 2000.0
 
 # Stage colors (PSD lines) and transmissibility line colors (blends = numerator/denominator).
 COLOR_CONTROL = "k"
 COLOR_DISPENSER = "tomato"
 COLOR_BATTERY = "dodgerblue"
 COLOR_DSPS = "limegreen"
+COLOR_REQUIRED_TEST_LEVEL = "#2F80ED"
 # dodgerblue + tomato (blue/red blend) → purple tone
 COLOR_BATTERY_OVER_DISPENSER = "#8E79A3"
 # limegreen + tomato (green/red blend) → olive / yellow-green tone
 COLOR_DSPS_OVER_DISPENSER = "#99A33D"
+
+# RPUG protoflight random-vibration MPE (all axes), supplied for the SpaceX report.
+RPUG_FREQUENCY_HZ = np.array([20.0, 50.0, 700.0, 800.0, 925.0, 2000.0])
+RPUG_PSD_G2_PER_HZ = np.array([0.010, 0.015, 0.015, 0.030, 0.030, 0.006])
+# Source-reported value; the displayed PSD corners are rounded.
+RPUG_GRMS_G = 5.57
+RPUG_DURATION_MIN = 1.0
 
 RATIO_LINE_STYLES: List[Tuple[str, str]] = [
     ("Dispenser Combined / Control", COLOR_DISPENSER),
@@ -81,6 +92,14 @@ def parse_args() -> argparse.Namespace:
         default=[r.run_number for r in RUNS_DEFAULT],
         help="Run numbers to process.",
     )
+    parser.add_argument(
+        "--spacex-report-only",
+        action="store_true",
+        help=(
+            "Create only the SpaceX-report PSD overview (control input, dispenser "
+            "combined, and RPUG required test level) for each selected run."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -132,6 +151,9 @@ def load_run_psd(run_csv: str) -> pd.DataFrame:
     out = out.dropna(subset=["Frequency_Hz", "Control_psd"])
     out = out[out["Frequency_Hz"] > 0].copy()
     out = out.sort_values("Frequency_Hz")
+    out = out[
+        (out["Frequency_Hz"] >= FREQ_MIN_HZ) & (out["Frequency_Hz"] <= FREQ_MAX_HZ)
+    ].copy()
 
     # PSD energy average of the two dispenser sensors.
     out["Dispenser_Combined_psd"] = 0.5 * (
@@ -149,6 +171,66 @@ def transmissibility(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
 
 def db10(x: pd.Series) -> pd.Series:
     return 10.0 * np.log10(np.clip(x, DB_EPS, None))
+
+
+def grms_from_psd(freq_hz: pd.Series, psd: pd.Series) -> float:
+    return float(np.sqrt(trapezoid(np.clip(psd, 0.0, None), x=freq_hz)))
+
+
+def make_spacex_report_psd_plot(
+    run_df: pd.DataFrame, run_number: int, axis: str, output_dir: str
+) -> str:
+    """Create the three-curve PSD overview requested for the SpaceX test report."""
+    frequency_hz = run_df["Frequency_Hz"]
+    report_curves = [
+        ("Control Input", run_df["Control_psd"], COLOR_CONTROL),
+        (
+            "Dispenser Combined",
+            run_df["Dispenser_Combined_psd"],
+            COLOR_DISPENSER,
+        ),
+    ]
+
+    plt.figure(figsize=(11, 7))
+    for label, psd, color in report_curves:
+        grms = grms_from_psd(frequency_hz, psd)
+        legend_label = f"{label} ($G_{{\\mathrm{{rms}}}}$={grms:.2f} g)"
+        plt.loglog(
+            frequency_hz,
+            np.clip(psd, DB_EPS, None),
+            label=legend_label,
+            color=color,
+        )
+
+    required_label = (
+        "Required Test Level "
+        f"(RPUG; $G_{{\\mathrm{{rms}}}}$={RPUG_GRMS_G:.2f} g, "
+        f"{RPUG_DURATION_MIN:.0f} min)"
+    )
+    plt.loglog(
+        RPUG_FREQUENCY_HZ,
+        RPUG_PSD_G2_PER_HZ,
+        label=required_label,
+        color=COLOR_REQUIRED_TEST_LEVEL,
+        linestyle="--",
+        linewidth=2.2,
+        zorder=4,
+    )
+    plt.xlim(FREQ_MIN_HZ, FREQ_MAX_HZ)
+    plt.xlabel("Frequency (Hz)")
+    plt.ylabel("PSD (G²/Hz)")
+    plt.title(f"Run {run_number} ({axis}-axis): SpaceX Test Report PSD Overview")
+    plt.grid(which="both", linestyle="--", alpha=0.35)
+    plt.legend()
+    plt.tight_layout()
+
+    output_path = os.path.join(
+        output_dir,
+        f"run_{run_number:02d}_{axis}_spacex_report_psd_overview.png",
+    )
+    plt.savefig(output_path, dpi=180)
+    plt.close()
+    return output_path
 
 
 def summarize_curve(
@@ -198,12 +280,15 @@ def make_run_plots(
     plt.figure(figsize=(11, 7))
     curves = [
         ("Control", c, COLOR_CONTROL),
-        ("Dispenser Combined (mean PSD)", run_df["Dispenser_Combined_psd"], COLOR_DISPENSER),
-        ("Battery (vector PSD)", run_df["Battery_psd"], COLOR_BATTERY),
-        ("DSPS (vector PSD)", run_df["DSPS_psd"], COLOR_DSPS),
+        ("Dispenser Combined", run_df["Dispenser_Combined_psd"], COLOR_DISPENSER),
+        ("Battery", run_df["Battery_psd"], COLOR_BATTERY),
+        ("DSPS", run_df["DSPS_psd"], COLOR_DSPS),
     ]
     for label, y, color in curves:
-        plt.loglog(f, np.clip(y, DB_EPS, None), label=label, color=color)
+        grms = grms_from_psd(f, y)
+        legend_label = f"{label} ($G_{{\\mathrm{{rms}}}}$={grms:.2f} g)"
+        plt.loglog(f, np.clip(y, DB_EPS, None), label=legend_label, color=color)
+    plt.xlim(FREQ_MIN_HZ, FREQ_MAX_HZ)
     plt.xlabel("Frequency (Hz)")
     plt.ylabel("PSD (G²/Hz)")
     plt.title(f"Run {run_number} ({axis}-axis): PSD Energy Transfer Overview")
@@ -223,6 +308,7 @@ def make_run_plots(
         ("C2", run_df["C2_psd"], "0.65"),
     ]:
         plt.loglog(f, np.clip(y, DB_EPS, None), label=label, color=color)
+    plt.xlim(FREQ_MIN_HZ, FREQ_MAX_HZ)
     plt.xlabel("Frequency (Hz)")
     plt.ylabel("PSD (G²/Hz)")
     plt.title(
@@ -243,6 +329,7 @@ def make_run_plots(
     for label, color in RATIO_LINE_STYLES:
         plt.semilogx(f, ratios[label], label=label, color=color)
     plt.axhline(1.0, color="k", linestyle=":", linewidth=1.0)
+    plt.xlim(FREQ_MIN_HZ, FREQ_MAX_HZ)
     plt.xlabel("Frequency (Hz)")
     plt.ylabel("Transmissibility (PSD ratio)")
     plt.title(f"Run {run_number} ({axis}-axis): Stage-to-Stage Transmissibility")
@@ -263,6 +350,7 @@ def make_run_plots(
     plt.axhline(0.0, color="k", linestyle=":", linewidth=1.0)
     plt.axhline(3.0, color="gray", linestyle="--", linewidth=0.8)
     plt.axhline(-3.0, color="gray", linestyle="--", linewidth=0.8)
+    plt.xlim(FREQ_MIN_HZ, FREQ_MAX_HZ)
     plt.xlabel("Frequency (Hz)")
     plt.ylabel("Transmissibility (dB)")
     plt.title(f"Run {run_number} ({axis}-axis): Transmissibility (dB)")
@@ -299,7 +387,15 @@ def main() -> None:
 
         print(f"Processing Run {run} ({axis}) from {run_csv}")
         run_df = load_run_psd(run_csv)
-        created, summaries = make_run_plots(run_df, run, axis, args.output_dir)
+        if args.spacex_report_only:
+            created = [
+                make_spacex_report_psd_plot(run_df, run, axis, args.output_dir)
+            ]
+            summaries = []
+        else:
+            created, summaries = make_run_plots(
+                run_df, run, axis, args.output_dir
+            )
         all_outputs.extend(created)
         all_summaries.extend(summaries)
 
