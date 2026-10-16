@@ -4,3 +4,6 @@
 *.png
 __pycache__/csie_det0_thermal.cpython-314.pyc
 *.pyc
+
+# Generated TVAC2 reports, caches, images, and movies.
+tvac2_light_leak_output/
